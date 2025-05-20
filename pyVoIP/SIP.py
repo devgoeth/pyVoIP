@@ -392,15 +392,6 @@ class SIPMessage:
                 "Unable to decipher SIP request: " + str(heading, "utf8")
             )
 
-    def parseHeader(self, header: str, data: str) -> None:
-        warnings.warn(
-            "parseHeader is deprecated due to PEP8 compliance. "
-            + "Use parse_header instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.parse_header(header, data)
-
     def parse_header(self, header: str, data: str) -> None:
         if header == "Via":
             for d in data:
@@ -426,7 +417,9 @@ class SIPMessage:
                     else:
                         _via[x] = None
                 self.headers["Via"].append(_via)
-        elif header == "From" or header == "To":
+        elif header == "From" or header == "To" or header == "f" or header == "t":
+            # Определяем правильный ключ заголовка
+            header_key = "From" if header in ["From", "f"] else "To"
             info = data.split(";tag=")
             tag = ""
             if len(info) >= 2:
@@ -443,7 +436,7 @@ class SIPMessage:
                 number = None
                 host = address
 
-            self.headers[header] = {
+            self.headers[header_key] = {
                 "raw": raw,
                 "tag": tag,
                 "address": address,
@@ -468,6 +461,32 @@ class SIPMessage:
                 header_data[var] = data.strip('"')
             self.headers[header] = header_data
             self.authentication = header_data
+        elif header == "Call-ID" or header == "i":
+            # Сохраняем Call-ID как простую строку
+            self.headers["Call-ID"] = data.strip()
+        elif header == "Content-Type" or header == "c":
+            # Сохраняем Content-Type как простую строку
+            self.headers["Content-Type"] = data.strip()
+        elif header == "Contact" or header == "m":
+            # Парсим Contact аналогично From/To
+            raw = data
+            contact = re.split(r"<?sip:", raw)
+            contact[0] = contact[0].strip('"').strip("'")
+            address = contact[1].strip(">")
+            if len(address.split("@")) == 2:
+                number = address.split("@")[0]
+                host = address.split("@")[1]
+            else:
+                number = None
+                host = address
+
+            self.headers["Contact"] = {
+                "raw": raw,
+                "address": address,
+                "number": number,
+                "caller": contact[0],
+                "host": host,
+            }
         else:
             self.headers[header] = data
 
@@ -732,6 +751,26 @@ class SIPMessage:
             i = str(x, "utf8").split(": ")
             if i[0] == "Via":
                 headers["Via"].append(i[1])
+            elif i[0] == "i":
+                # Обрабатываем "i" как "Call-ID"
+                handle("Call-ID", i[1])
+                continue
+            elif i[0] == "c":
+                # Обрабатываем "c" как "Content-Type"
+                handle("Content-Type", i[1])
+                continue
+            elif i[0] == "f":
+                # Обрабатываем "f" как "From"
+                handle("From", i[1])
+                continue
+            elif i[0] == "t":
+                # Обрабатываем "t" как "To"
+                handle("To", i[1])
+                continue
+            elif i[0] == "m":
+                # Обрабатываем "m" как "Contact"
+                handle("Contact", i[1])
+                continue
             if i[0] not in headers.keys():
                 headers[i[0]] = i[1]
 
@@ -749,54 +788,62 @@ class SIPMessage:
                 if i != [""]:
                     handle(i[0], i[1])
 
-    def parseSIPResponse(self, data: bytes) -> None:
-        warnings.warn(
-            "parseSIPResponse is deprecated "
-            + "due to PEP8 compliance. Use parse_sip_response "
-            + "instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.parse_sip_response(data)
-
     def parse_sip_response(self, data: bytes) -> None:
-        headers, body = data.split(b"\r\n\r\n")
+        try:
+            headers, body = data.split(b"\r\n\r\n")
+        except ValueError as ve:
+            debug(f"Error unpacking data, only using header: {ve}")
+            headers = data.split(b"\r\n\r\n")[0]
 
         headers_raw = headers.split(b"\r\n")
-        self.heading = headers_raw.pop(0)
-        self.version = str(self.heading.split(b" ")[0], "utf8")
-        if self.version not in self.SIPCompatibleVersions:
-            raise SIPParseError(f"SIP Version {self.version} not compatible.")
+        heading = headers_raw.pop(0)
+        self.heading = heading
 
-        self.status = SIPStatus(int(self.heading.split(b" ")[1]))
+        # Parse status code
+        status_code = int(str(heading.split(b" ")[1], "utf8"))
+        self.status = SIPStatus(status_code)
 
-        self.parse_raw_header(headers_raw, self.parse_header)
+        # Parse headers
+        def handle_header(header: str, data: str) -> None:
+            self.parse_header(header, data)
 
-        self.parse_raw_body(body, self.parse_body)
+        self.parse_raw_header(headers_raw, handle_header)
 
-    def parseSIPMessage(self, data: bytes) -> None:
-        warnings.warn(
-            "parseSIPMessage is deprecated due to PEP8 compliance."
-            + " Use parse_sip_message instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.parse_sip_message(data)
+        # Parse body if exists
+        if len(body) > 0:
+            def handle_body(header: str, data: str) -> None:
+                self.parse_body(header, data)
+
+            self.parse_raw_body(body, handle_body)
 
     def parse_sip_message(self, data: bytes) -> None:
-        headers, body = data.split(b"\r\n\r\n")
+        try:
+            headers, body = data.split(b"\r\n\r\n")
+        except ValueError as ve:
+            debug(f"Error unpacking data, only using header: {ve}")
+            headers = data.split(b"\r\n\r\n")[0]
 
         headers_raw = headers.split(b"\r\n")
-        self.heading = headers_raw.pop(0)
-        self.version = str(self.heading.split(b" ")[2], "utf8")
-        if self.version not in self.SIPCompatibleVersions:
-            raise SIPParseError(f"SIP Version {self.version} not compatible.")
+        heading = headers_raw.pop(0)
+        self.heading = heading
 
-        self.method = str(self.heading.split(b" ")[0], "utf8")
+        # Parse method
+        self.method = str(heading.split(b" ")[0], "utf8")
+        if self.method not in self.SIPCompatibleMethods:
+            raise SIPParseError(f"SIP Method {self.method} not compatible.")
 
-        self.parse_raw_header(headers_raw, self.parse_header)
+        # Parse headers
+        def handle_header(header: str, data: str) -> None:
+            self.parse_header(header, data)
 
-        self.parse_raw_body(body, self.parse_body)
+        self.parse_raw_header(headers_raw, handle_header)
+
+        # Parse body if exists
+        if len(body) > 0:
+            def handle_body(header: str, data: str) -> None:
+                self.parse_body(header, data)
+
+            self.parse_raw_body(body, handle_body)
 
 
 class SIPClient:
@@ -826,23 +873,24 @@ class SIPClient:
 
         self.tags: List[str] = []
         self.tagLibrary = {"register": self.gen_tag()}
+        
+        # Добавляем сохранение Call-ID для всей сессии
+        self.registration_call_id = None
 
         self.myPort = myPort
 
         self.default_expires = 120
         self.register_timeout = 30
-
-        self.inviteCounter = Counter()
+        self.registerFailures = 0
+        self.registerThread = None
         self.registerCounter = Counter()
-        self.subscribeCounter = Counter()
-        self.byeCounter = Counter()
-        self.callID = Counter()
         self.sessID = Counter()
 
-        self.urnUUID = self.gen_urn_uuid()
+        self.s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.s.bind((self.myIP, self.myPort))
+        self.out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.out.bind((self.myIP, 0))
 
-        self.registerThread: Optional[Timer] = None
-        self.registerFailures = 0
         self.recvLock = Lock()
 
     def recv_loop(self) -> None:
@@ -921,6 +969,10 @@ class SIPClient:
                     request.encode("utf8"), (self.server, self.port)
                 )
             else:
+                # Сначала отправляем Ringing
+                ringing = self.gen_ringing(message)
+                self.out.sendto(ringing.encode("utf8"), (self.server, self.port))
+                # Затем передаем сообщение в callback для обработки
                 self.callCallback(message)
         elif message.method == "BYE":
             # TODO: If callCallback is None, the call doesn't exist, 481
@@ -941,6 +993,8 @@ class SIPClient:
                     response.encode("utf8"), (self.server, self.port)
                 )
         elif message.method == "ACK":
+            # Обрабатываем ACK с помощью нового метода
+            self.handle_ack(message)
             return
         elif message.method == "CANCEL":
             # TODO: If callCallback is None, the call doesn't exist, 481
@@ -971,6 +1025,8 @@ class SIPClient:
             # Only run if registerThread exists
             self.registerThread.cancel()
             self.deregister()
+            # Сбрасываем Call-ID при остановке клиента
+            self.registration_call_id = None
         self._close_sockets()
 
     def _close_sockets(self) -> None:
@@ -981,42 +1037,118 @@ class SIPClient:
             if self.out:
                 self.out.close()
 
-    def genCallID(self) -> str:
-        warnings.warn(
-            "genCallID is deprecated due to PEP8 compliance. "
-            + "Use gen_call_id instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.gen_call_id()
-
     def gen_call_id(self) -> str:
-        hash = hashlib.sha256(str(self.callID.next()).encode("utf8"))
-        hhash = hash.hexdigest()
-        return f"{hhash[0:32]}@{self.myIP}:{self.myPort}"
+        """Генерирует Call-ID, который будет использоваться для всей сессии"""
+        # Используем комбинацию имени пользователя, сервера и случайного числа
+        # для создания уникального, но предсказуемого Call-ID
+        random_part = ''.join(random.choices('0123456789abcdef', k=8))
+        call_id = f"{self.username}-{self.server}-{random_part}@{self.myIP}"
+        return call_id
 
-    def lastCallID(self) -> str:
-        warnings.warn(
-            "lastCallID is deprecated due to PEP8 compliance. "
-            + "Use gen_last_call_id instead.",
-            DeprecationWarning,
-            stacklevel=2,
+    def gen_first_response(self, deregister=False) -> str:
+        # Используем существующий Call-ID или генерируем новый
+        if not self.registration_call_id:
+            self.registration_call_id = self.gen_call_id()
+        
+        call_id = self.registration_call_id
+        tag = self.tagLibrary["register"]
+        branch = "z9hG4bK" + self.gen_call_id()[0:25]
+
+        request = "REGISTER sip:" + self.server + " SIP/2.0\r\n"
+        request += "Via: SIP/2.0/UDP " + self.myIP + ":" + str(self.myPort)
+        request += ";branch=" + branch + ";rport\r\n"
+        request += "Max-Forwards: 70\r\n"
+        request += (
+            "From: <sip:"
+            + self.username
+            + "@"
+            + self.server
+            + ">;tag="
+            + tag
+            + "\r\n"
         )
-        return self.gen_last_call_id()
-
-    def gen_last_call_id(self) -> str:
-        hash = hashlib.sha256(str(self.callID.current() - 1).encode("utf8"))
-        hhash = hash.hexdigest()
-        return f"{hhash[0:32]}@{self.myIP}:{self.myPort}"
-
-    def genTag(self) -> str:
-        warnings.warn(
-            "genTag is deprecated due to PEP8 compliance. "
-            + "Use gen_tag instead.",
-            DeprecationWarning,
-            stacklevel=2,
+        request += (
+            "To: <sip:" + self.username + "@" + self.server + ">\r\n"
         )
-        return self.gen_tag()
+        request += "Call-ID: " + call_id + "\r\n"
+        request += (
+            "CSeq: " + str(self.registerCounter.next()) + " REGISTER\r\n"
+        )
+        request += (
+            "Contact: <sip:"
+            + self.username
+            + "@"
+            + self.myIP
+            + ":"
+            + str(self.myPort)
+            + ">\r\n"
+        )
+        request += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
+        request += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
+        if deregister:
+            request += "Expires: 0\r\n"
+        else:
+            request += f"Expires: {self.default_expires}\r\n"
+        request += "Content-Length: 0\r\n\r\n"
+
+        return request
+
+    def gen_register(self, request: SIPMessage, deregister=False) -> str:
+        # Используем существующий Call-ID
+        call_id = self.registration_call_id
+        tag = self.tagLibrary["register"]
+        branch = "z9hG4bK" + self.gen_call_id()[0:25]
+
+        regRequest = "REGISTER sip:" + self.server + " SIP/2.0\r\n"
+        regRequest += "Via: SIP/2.0/UDP " + self.myIP + ":" + str(self.myPort)
+        regRequest += ";branch=" + branch + ";rport\r\n"
+        regRequest += "Max-Forwards: 70\r\n"
+        regRequest += (
+            "From: <sip:"
+            + self.username
+            + "@"
+            + self.server
+            + ">;tag="
+            + tag
+            + "\r\n"
+        )
+        regRequest += (
+            "To: <sip:" + self.username + "@" + self.server + ">\r\n"
+        )
+        regRequest += "Call-ID: " + call_id + "\r\n"
+        regRequest += (
+            "CSeq: " + str(self.registerCounter.next()) + " REGISTER\r\n"
+        )
+        regRequest += (
+            "Contact: <sip:"
+            + self.username
+            + "@"
+            + self.myIP
+            + ":"
+            + str(self.myPort)
+            + ">\r\n"
+        )
+        regRequest += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
+        regRequest += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
+
+        # Добавляем заголовок авторизации
+        authhash = self.gen_authorization(request)
+        nonce = request.authentication["nonce"]
+        realm = request.authentication["realm"]
+        regRequest += (
+            f'Authorization: Digest username="{self.username}",realm='
+            + f'"{realm}",nonce="{nonce}",uri="sip:{self.server};'
+            + f'transport=UDP",response="{str(authhash, "utf8")}",'
+            + "algorithm=MD5\r\n"
+        )
+
+        if deregister:
+            regRequest += "Expires: 0\r\n"
+        else:
+            regRequest += f"Expires: {self.default_expires}\r\n"
+        regRequest += "Content-Length: 0\r\n\r\n"
+
+        return regRequest
 
     def gen_tag(self) -> str:
         # Keep as True instead of NSD so it can generate a tag on deregister.
@@ -1116,149 +1248,6 @@ class SIPClient:
         Generate client instance specific urn:uuid
         """
         return str(uuid.uuid4()).upper()
-
-    def genFirstRequest(self, deregister=False) -> str:
-        warnings.warn(
-            "genFirstResponse is deprecated "
-            + "due to PEP8 compliance. "
-            + "Use gen_first_response instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.gen_first_response(deregister)
-
-    def gen_first_response(self, deregister=False) -> str:
-        regRequest = f"REGISTER sip:{self.server} SIP/2.0\r\n"
-        regRequest += (
-            f"Via: SIP/2.0/UDP {self.myIP}:{self.myPort};"
-            + f"branch={self.gen_branch()};rport\r\n"
-        )
-        regRequest += (
-            f'From: "{self.username}" '
-            + f"<sip:{self.username}@{self.server}>;tag="
-            + f'{self.tagLibrary["register"]}\r\n'
-        )
-        regRequest += (
-            f'To: "{self.username}" '
-            + f"<sip:{self.username}@{self.server}>\r\n"
-        )
-        regRequest += f"Call-ID: {self.gen_call_id()}\r\n"
-        regRequest += f"CSeq: {self.registerCounter.next()} REGISTER\r\n"
-        regRequest += (
-            "Contact: "
-            + f"<sip:{self.username}@{self.myIP}:{self.myPort};"
-            + "transport=UDP>;+sip.instance="
-            + f'"<urn:uuid:{self.urnUUID}>"\r\n'
-        )
-        regRequest += f'Allow: {(", ".join(pyVoIP.SIPCompatibleMethods))}\r\n'
-        regRequest += "Max-Forwards: 70\r\n"
-        regRequest += "Allow-Events: org.3gpp.nwinitdereg\r\n"
-        regRequest += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
-        # Supported: 100rel, replaces, from-change, gruu
-        regRequest += (
-            "Expires: "
-            + f"{self.default_expires if not deregister else 0}\r\n"
-        )
-        regRequest += "Content-Length: 0"
-        regRequest += "\r\n\r\n"
-
-        return regRequest
-
-    def genSubscribe(self, response: SIPMessage) -> str:
-        warnings.warn(
-            "genSubscribe is deprecated due to PEP8 compliance. "
-            + "Use gen_subscribe instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.gen_subscribe(response)
-
-    def gen_subscribe(self, response: SIPMessage) -> str:
-        subRequest = f"SUBSCRIBE sip:{self.username}@{self.server} SIP/2.0\r\n"
-        subRequest += (
-            f"Via: SIP/2.0/UDP {self.myIP}:{self.myPort};"
-            + f"branch={self.gen_branch()};rport\r\n"
-        )
-        subRequest += (
-            f'From: "{self.username}" '
-            + f"<sip:{self.username}@{self.server}>;tag="
-            + f"{self.gen_tag()}\r\n"
-        )
-        subRequest += f"To: <sip:{self.username}@{self.server}>\r\n"
-        subRequest += f'Call-ID: {response.headers["Call-ID"]}\r\n'
-        subRequest += f"CSeq: {self.subscribeCounter.next()} SUBSCRIBE\r\n"
-        # TODO: check if transport is needed
-        subRequest += (
-            "Contact: "
-            + f"<sip:{self.username}@{self.myIP}:{self.myPort};"
-            + "transport=UDP>;+sip.instance="
-            + f'"<urn:uuid:{self.urnUUID}>"\r\n'
-        )
-        subRequest += "Max-Forwards: 70\r\n"
-        subRequest += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
-        subRequest += f"Expires: {self.default_expires * 2}\r\n"
-        subRequest += "Event: message-summary\r\n"
-        subRequest += "Accept: application/simple-message-summary"
-        subRequest += "Content-Length: 0"
-        subRequest += "\r\n\r\n"
-
-        return subRequest
-
-    def genRegister(self, request: SIPMessage, deregister=False) -> str:
-        warnings.warn(
-            "genRegister is deprecated due to PEP8 compliance. "
-            + "Use gen_register instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.gen_register(request, deregister)
-
-    def gen_register(self, request: SIPMessage, deregister=False) -> str:
-        response = str(self.gen_authorization(request), "utf8")
-        nonce = request.authentication["nonce"]
-        realm = request.authentication["realm"]
-
-        regRequest = f"REGISTER sip:{self.server} SIP/2.0\r\n"
-        regRequest += (
-            f"Via: SIP/2.0/UDP {self.myIP}:{self.myPort};branch="
-            + f"{self.gen_branch()};rport\r\n"
-        )
-        regRequest += (
-            f'From: "{self.username}" '
-            + f"<sip:{self.username}@{self.server}>;tag="
-            + f'{self.tagLibrary["register"]}\r\n'
-        )
-        regRequest += (
-            f'To: "{self.username}" '
-            + f"<sip:{self.username}@{self.server}>\r\n"
-        )
-        call_id = request.headers.get("Call-ID", self.gen_call_id())
-        regRequest += f"Call-ID: {call_id}\r\n"
-        regRequest += f"CSeq: {self.registerCounter.next()} REGISTER\r\n"
-        regRequest += (
-            "Contact: "
-            + f"<sip:{self.username}@{self.myIP}:{self.myPort};"
-            + "transport=UDP>;+sip.instance="
-            + f'"<urn:uuid:{self.urnUUID}>"\r\n'
-        )
-        regRequest += f'Allow: {(", ".join(pyVoIP.SIPCompatibleMethods))}\r\n'
-        regRequest += "Max-Forwards: 70\r\n"
-        regRequest += "Allow-Events: org.3gpp.nwinitdereg\r\n"
-        regRequest += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
-        regRequest += (
-            "Expires: "
-            + f"{self.default_expires if not deregister else 0}\r\n"
-        )
-        regRequest += (
-            f'Authorization: Digest username="{self.username}",'
-            + f'realm="{realm}",nonce="{nonce}",'
-            + f'uri="sip:{self.server};transport=UDP",'
-            + f'response="{response}",algorithm=MD5\r\n'
-        )
-        regRequest += "Content-Length: 0"
-        regRequest += "\r\n\r\n"
-
-        return regRequest
 
     def genBusy(self, request: SIPMessage) -> str:
         warnings.warn(
@@ -1599,7 +1588,8 @@ class SIPClient:
         sendtype: "RTP.TransmitType",
     ) -> Tuple[SIPMessage, str, int]:
         branch = "z9hG4bK" + self.gen_call_id()[0:25]
-        call_id = self.gen_call_id()
+        # Используем существующий Call-ID для всей сессии
+        call_id = self.registration_call_id if self.registration_call_id else self.gen_call_id()
         sess_id = self.sessID.next()
         invite = self.gen_invite(
             number, str(sess_id), ms, sendtype, branch, call_id
@@ -1709,10 +1699,21 @@ class SIPClient:
             if ready[0]:
                 resp = self.s.recv(8192)
                 response = SIPMessage(resp)
+                response = self.trying_timeout_check(response)
                 if response.status == SIPStatus(401):
                     # At this point, it's reasonable to assume that
                     # this is caused by invalid credentials.
-                    debug("Unauthorized")
+                    debug("=" * 50)
+                    debug("Unauthorized, SIP Message Log:\n")
+                    debug("SENT")
+                    debug(firstRequest)
+                    debug("\nRECEIVED")
+                    debug(response.summary())
+                    debug("\nSENT (DO NOT SHARE THIS PACKET)")
+                    debug(regRequest)
+                    debug("\nRECEIVED")
+                    debug(response.summary())
+                    debug("=" * 50)
                     raise InvalidAccountInfoError(
                         "Invalid Username or "
                         + "Password for SIP server "
@@ -1733,6 +1734,8 @@ class SIPClient:
             raise RetryRequiredError("Response SIP status of 500")
 
         if response.status == SIPStatus.OK:
+            # Очищаем Call-ID после успешной дерегистрации
+            self.registration_call_id = None
             return True
         return False
 
@@ -1866,6 +1869,9 @@ class SIPClient:
         debug(response.raw)
 
         if response.status == SIPStatus.OK:
+            # Проверяем наличие Call-ID в заголовках
+            if "Call-ID" in response.headers:
+                self.registration_call_id = response.headers["Call-ID"]
             return True
         else:
             raise InvalidAccountInfoError(
@@ -1915,3 +1921,80 @@ class SIPClient:
                 resp = self.s.recv(8192)
             response = SIPMessage(resp)
         return response
+
+    def gen_pickup_ok(self, request: SIPMessage, sess_id: str, ms: Dict[int, Dict[int, "RTP.PayloadType"]], sendtype: "RTP.TransmitType") -> str:
+        """Генерирует ответ 200 OK при поднятии трубки"""
+        # Генерируем SDP тело сообщения
+        body = "v=0\r\n"
+        body += f"o=pyVoIP {sess_id} {int(sess_id)+2} IN IP4 {self.myIP}\r\n"
+        body += f"s=pyVoIP {pyVoIP.__version__}\r\n"
+        body += f"c=IN IP4 {self.myIP}\r\n"
+        body += "t=0 0\r\n"
+        
+        # Добавляем медиа-описания
+        for x in ms:
+            body += f"m=audio {x} RTP/AVP"
+            for m in ms[x]:
+                body += f" {m}"
+            body += "\r\n"
+            for m in ms[x]:
+                body += f"a=rtpmap:{m} {ms[x][m]}/{ms[x][m].rate}\r\n"
+                if str(ms[x][m]) == "telephone-event":
+                    body += f"a=fmtp:{m} 0-16\r\n"
+        
+        # Добавляем атрибуты сессии
+        body += "a=ptime:20\r\n"
+        body += "a=maxptime:150\r\n"
+        body += f"a={str(sendtype)}\r\n"
+
+        # Используем тег из tagLibrary
+        tag = self.tagLibrary[request.headers["Call-ID"]]
+
+        # Формируем заголовки ответа
+        response = "SIP/2.0 200 OK\r\n"
+        
+        # Копируем все заголовки Via в том же порядке
+        response += self._gen_response_via_header(request)
+        
+        # Копируем Record-Route если есть
+        if "Record-Route" in request.headers:
+            if isinstance(request.headers["Record-Route"], list):
+                for route in request.headers["Record-Route"]:
+                    response += f"Record-Route: {route}\r\n"
+            else:
+                response += f"Record-Route: {request.headers['Record-Route']}\r\n"
+        
+        # Формируем From (должен быть точной копией из запроса)
+        response += f"From: {request.headers['From']['raw']};tag={request.headers['From']['tag']}\r\n"
+        
+        # Формируем To с нашим тегом
+        response += f"To: {request.headers['To']['raw']};tag={tag}\r\n"
+        
+        # Копируем Call-ID
+        response += f"Call-ID: {request.headers['Call-ID']}\r\n"
+        
+        # Копируем CSeq
+        response += f"CSeq: {request.headers['CSeq']['check']} {request.headers['CSeq']['method']}\r\n"
+        
+        # Добавляем наш Contact
+        response += f"Contact: <sip:{self.username}@{self.myIP}:{self.myPort}>\r\n"
+        
+        # Добавляем остальные заголовки
+        response += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
+        response += f"Allow: {', '.join(pyVoIP.SIPCompatibleMethods)}\r\n"
+        response += "Content-Type: application/sdp\r\n"
+        response += f"Content-Length: {len(body)}\r\n\r\n"
+        response += body
+        
+        return response
+
+    def handle_ack(self, message: SIPMessage) -> None:
+        """Обрабатывает входящий ACK"""
+        if message.method == "ACK":
+            # Проверяем соответствие Call-ID
+            if message.headers["Call-ID"] in self.tagLibrary:
+                # ACK получен, можно начинать RTP-сессию
+                if self.callCallback is not None:
+                    self.callCallback(message)
+            else:
+                debug(f"Received ACK for unknown Call-ID: {message.headers['Call-ID']}")
