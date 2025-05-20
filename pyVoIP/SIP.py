@@ -939,6 +939,18 @@ class SIPClient:
         return self.parse_message(message)
 
     def parse_message(self, message: SIPMessage) -> None:
+        debug("\n=== RECEIVED SIP MESSAGE ===")
+        debug(f"Type: {message.type}")
+        debug(f"Method: {message.method if hasattr(message, 'method') else 'N/A'}")
+        debug(f"Status: {message.status if message.type != SIPMessageType.MESSAGE else 'N/A'}")
+        debug("Headers:")
+        for header, value in message.headers.items():
+            debug(f"{header}: {value}")
+        debug("Body:")
+        for key, value in message.body.items():
+            debug(f"{key}: {value}")
+        debug("=== END SIP MESSAGE ===\n")
+
         if message.type != SIPMessageType.MESSAGE:
             if message.status == SIPStatus.OK:
                 if self.callCallback is not None:
@@ -969,9 +981,13 @@ class SIPClient:
                     request.encode("utf8"), (self.server, self.port)
                 )
             else:
+                debug("\n=== PROCESSING INVITE ===")
                 # Сначала отправляем Ringing
                 ringing = self.gen_ringing(message)
+                debug("Sending Ringing response:")
+                debug(ringing)
                 self.out.sendto(ringing.encode("utf8"), (self.server, self.port))
+                debug("=== END PROCESSING INVITE ===\n")
                 # Затем передаем сообщение в callback для обработки
                 self.callCallback(message)
         elif message.method == "BYE":
@@ -993,10 +1009,22 @@ class SIPClient:
                     response.encode("utf8"), (self.server, self.port)
                 )
         elif message.method == "ACK":
+            debug("\n=== PROCESSING ACK ===")
+            debug(f"Call-ID: {message.headers.get('Call-ID')}")
+            debug(f"From tag: {message.headers.get('From', {}).get('tag')}")
+            debug(f"To tag: {message.headers.get('To', {}).get('tag')}")
+            debug(f"Known tags: {self.tagLibrary}")
             # Обрабатываем ACK с помощью нового метода
             self.handle_ack(message)
+            debug("=== END PROCESSING ACK ===\n")
             return
         elif message.method == "CANCEL":
+            debug("\n=== RECEIVED CANCEL ===")
+            debug(f"Call-ID: {message.headers.get('Call-ID')}")
+            debug(f"From tag: {message.headers.get('From', {}).get('tag')}")
+            debug(f"To tag: {message.headers.get('To', {}).get('tag')}")
+            debug(f"CSeq: {message.headers.get('CSeq')}")
+            debug("=== END CANCEL ===\n")
             # TODO: If callCallback is None, the call doesn't exist, 481
             self.callCallback(message)  # type: ignore
             response = self.gen_ok(message)
@@ -1924,6 +1952,13 @@ class SIPClient:
 
     def gen_pickup_ok(self, request: SIPMessage, sess_id: str, ms: Dict[int, Dict[int, "RTP.PayloadType"]], sendtype: "RTP.TransmitType") -> str:
         """Генерирует ответ 200 OK при поднятии трубки"""
+        debug("\n=== GENERATING 200 OK ===")
+        debug(f"Original request Call-ID: {request.headers.get('Call-ID')}")
+        debug(f"Original request From: {request.headers.get('From')}")
+        debug(f"Original request To: {request.headers.get('To')}")
+        debug(f"Original request Via: {request.headers.get('Via')}")
+        debug(f"Original request Record-Route: {request.headers.get('Record-Route')}")
+
         # Генерируем SDP тело сообщения
         body = "v=0\r\n"
         body += f"o=pyVoIP {sess_id} {int(sess_id)+2} IN IP4 {self.myIP}\r\n"
@@ -1949,6 +1984,7 @@ class SIPClient:
 
         # Используем тег из tagLibrary
         tag = self.tagLibrary[request.headers["Call-ID"]]
+        debug(f"Using tag from library: {tag}")
 
         # Формируем заголовки ответа
         response = "SIP/2.0 200 OK\r\n"
@@ -1985,6 +2021,10 @@ class SIPClient:
         response += "Content-Type: application/sdp\r\n"
         response += f"Content-Length: {len(body)}\r\n\r\n"
         response += body
+
+        debug("\nGenerated 200 OK response:")
+        debug(response)
+        debug("=== END GENERATING 200 OK ===\n")
         
         return response
 
